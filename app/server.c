@@ -79,7 +79,7 @@ Node *parse(FILE *stream)
 		printf("bulk:%d\n", n);
 		ans->bulk = malloc(sizeof(char) * n);
 		fread(ans->bulk, sizeof(char), n, stream);
-		printf("bulk:\"%*s\"\n", n, ans->bulk);
+		printf("bulk:\"%.*s\"\n", n, ans->bulk);
 		fgets(buf, 1024, stream);
 		ans->size = n;
 		// memcpy(ans->bulk, buf, n);
@@ -101,6 +101,59 @@ void bulk(char *dest, char *src, int n)
 	return;
 }
 
+typedef struct ListNode
+{
+	struct ListNode *next;
+	char *key, *value;
+} ListNode;
+
+ListNode *head = NULL;
+ListNode *new_listNode(ListNode *next, char *key, char *value)
+{
+	ListNode *ans = malloc(sizeof(ListNode));
+	ans->next = next;
+	ans->key = key;
+	ans->value = value;
+	return ans;
+}
+
+char *get(char *key)
+{
+	ListNode *cur = head;
+	while (cur)
+	{
+		if (strcmp(cur->key, key) == 0)
+			return cur->value;
+		cur = cur->next;
+	}
+	return NULL;
+}
+
+void set(char *key, char *value)
+{
+	printf("SET[%s]", value);
+	ListNode *cur = head;
+	while (cur)
+	{
+		if (strcmp(cur->key, key) == 0)
+		{
+			cur->value = value;
+			return;
+		}
+		cur = cur->next;
+	}
+
+	head = new_listNode(head, key, value);
+	return;
+}
+
+char *str(char *byte, int n)
+{
+	char *ans = malloc(sizeof(char) * (n + 1));
+	memcpy(ans, byte, n);
+	ans[n] = '\0';
+	return ans;
+}
 /*void test(){
 
 	exit(0);
@@ -209,6 +262,28 @@ int main()
 					printf("COM:ECHO\n");
 					Node *arg = node->array[1];
 					bulk(buf, arg->bulk, arg->size);
+				}
+				else if (memcmp(node->array[0]->bulk, "set", 3) == 0)
+				{
+					printf("COM:SET\n");
+					set(str(node->array[1]->bulk, node->array[1]->size),
+						str(node->array[2]->bulk, node->array[2]->size));
+					strncpy(buf, "+OK\r\n", 1024);
+				}
+				else if (memcmp(node->array[0]->bulk, "get", 3) == 0)
+				{
+					printf("COM:GET\n");
+					char *resp = get(str(node->array[1]->bulk, node->array[1]->size));
+					if (resp == NULL)
+					{
+						strncpy(buf, "$-1\r\n", 1024);
+					}
+					else
+					{
+						printf("GET[%s]", resp);
+						bulk(buf, resp, strlen(resp));
+						// strncpy(buf, "$-1\r\n", 1024);
+					}
 				}
 				write(events[i].data.fd, buf, strlen(buf));
 			}
