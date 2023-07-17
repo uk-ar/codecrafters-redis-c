@@ -7,6 +7,104 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <fcntl.h>
+
+typedef struct Node
+{
+	struct Node **array;
+	char kind;
+	char *simple;
+	char *bulk;
+	int size;
+} Node;
+
+enum kind
+{
+	KIND_SIMPLE = '+',
+	KIND_BULK = '$',
+	KIND_ARRAY = '*'
+};
+
+// Node *parse(char *buf, char *end)
+Node *parse(FILE *stream)
+{
+	printf("start\n");
+	char kind;
+	if (fread(&kind, sizeof(char), 1, stream) <= 0)
+		return NULL;
+	printf("kind:\"%c\"\n", kind);
+
+	Node *ans = malloc(sizeof(Node));
+	ans->kind = kind;
+	char buf[1024];
+	if (kind == KIND_ARRAY)
+	{
+		printf("array\n");
+		if (fgets(buf, 1024, stream) <= 0)
+			return NULL;
+		int n = strtol(buf, NULL, 10);
+		printf("array:%d\n", n);
+		ans->array = malloc(sizeof(Node) * n);
+		// fread(buf, sizeof(char), 1, stream);
+		// if (fgets(buf, 1, stream) <= 0)
+		// return NULL;
+		// printf("array:%d:%d\n", n, ftell(stream));
+		for (int i = 0; i < n; i++)
+		{
+			printf("array:%d/%d\n", i, n);
+			ans->array[i] = parse(stream);
+		}
+		/*Node dummy, *cur = &dummy;
+		for (int i = 0; i < n; i++)
+		{
+			cur->next = parse(fd);
+			cur = cur->next;
+		}
+		return dummy.next;*/
+	}
+	else if (kind == KIND_SIMPLE)
+	{
+		printf("simple\n");
+		if (!fgets(buf, 1024, stream))
+			return NULL;
+		ans->simple = strdup(buf);
+		printf("simple:\"%s\"", ans->simple);
+	}
+	else if (kind == KIND_BULK)
+	{
+		printf("bulk\n");
+		if (!fgets(buf, 1024, stream))
+			return NULL;
+		int n = strtol(buf, NULL, 10);
+		printf("bulk:%d\n", n);
+		ans->bulk = malloc(sizeof(char) * n);
+		fread(ans->bulk, sizeof(char), n, stream);
+		printf("bulk:\"%*s\"\n", n, ans->bulk);
+		fgets(buf, 1024, stream);
+		ans->size = n;
+		// memcpy(ans->bulk, buf, n);
+	}
+	else
+	{
+		fread(buf, sizeof(char), 3, stream);
+		// buf[3] = '\0';
+		printf("error:\"%3s\"\n", buf);
+	}
+	return ans;
+}
+
+void bulk(char *dest, char *src, int n)
+{
+	int offset = snprintf(dest, 1024, "$%d\r\n", n);
+	memcpy(dest + offset, src, n);
+	snprintf(dest + offset + n, 3, "\r\n");
+	return;
+}
+
+/*void test(){
+
+	exit(0);
+}*/
 
 int main()
 {
@@ -86,18 +184,32 @@ int main()
 			}
 			else if (events[i].events == EPOLLIN)
 			{
-				char buf[1024];
-				int n = read(events[i].data.fd, buf, 1024);
-				if (n <= 0)
-				{					
+				// int n = read(events[i].data.fd, buf, 1024);
+				// Node *node = parse(buf, buf + n);
+				FILE *stream = fdopen(events[i].data.fd, "r");
+				if (!stream)
+					exit(0);
+				Node *node = parse(stream);
+				// fclose(stream);
+				if (node == NULL)
+				{
 					epoll_ctl(epollfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
 					close(events[i].data.fd);
 					break;
 				}
-				printf("read %d\n", n);
-				if (n <= 0)
-					break;
-				strncpy(buf, "+PONG\r\n", 1024);
+
+				char buf[1024];
+				if (memcmp(node->array[0]->bulk, "ping", 4) == 0)
+				{
+					printf("COM:PING\n");
+					strncpy(buf, "+PONG\r\n", 1024);
+				}
+				else if (memcmp(node->array[0]->bulk, "echo", 4) == 0)
+				{
+					printf("COM:ECHO\n");
+					Node *arg = node->array[1];
+					bulk(buf, arg->bulk, arg->size);
+				}
 				write(events[i].data.fd, buf, strlen(buf));
 			}
 		}
