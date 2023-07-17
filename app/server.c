@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <fcntl.h>
+#include <sys/time.h>
 
 typedef struct Node
 {
@@ -28,11 +29,11 @@ enum kind
 // Node *parse(char *buf, char *end)
 Node *parse(FILE *stream)
 {
-	printf("start\n");
+	// printf("start\n");
 	char kind;
 	if (fread(&kind, sizeof(char), 1, stream) <= 0)
 		return NULL;
-	printf("kind:\"%c\"\n", kind);
+	// printf("kind:\"%c\"\n", kind);
 
 	Node *ans = malloc(sizeof(Node));
 	ans->kind = kind;
@@ -45,6 +46,7 @@ Node *parse(FILE *stream)
 		int n = strtol(buf, NULL, 10);
 		printf("array:%d\n", n);
 		ans->array = malloc(sizeof(Node) * n);
+		ans->size = n;
 		// fread(buf, sizeof(char), 1, stream);
 		// if (fgets(buf, 1, stream) <= 0)
 		// return NULL;
@@ -72,14 +74,14 @@ Node *parse(FILE *stream)
 	}
 	else if (kind == KIND_BULK)
 	{
-		printf("bulk\n");
+		// printf("bulk\n");
 		if (!fgets(buf, 1024, stream))
 			return NULL;
 		int n = strtol(buf, NULL, 10);
-		printf("bulk:%d\n", n);
+		// printf("bulk:%d\n", n);
 		ans->bulk = malloc(sizeof(char) * n);
 		fread(ans->bulk, sizeof(char), n, stream);
-		printf("bulk:\"%.*s\"\n", n, ans->bulk);
+		// printf("bulk:\"%.*s\"\n", n, ans->bulk);
 		fgets(buf, 1024, stream);
 		ans->size = n;
 		// memcpy(ans->bulk, buf, n);
@@ -105,31 +107,52 @@ typedef struct ListNode
 {
 	struct ListNode *next;
 	char *key, *value;
+	struct timeval expire;
 } ListNode;
 
 ListNode *head = NULL;
-ListNode *new_listNode(ListNode *next, char *key, char *value)
+ListNode *new_listNode(ListNode *next, char *key, char *value, struct timeval expire)
 {
 	ListNode *ans = malloc(sizeof(ListNode));
 	ans->next = next;
 	ans->key = key;
 	ans->value = value;
+	ans->expire = expire;
 	return ans;
 }
 
 char *get(char *key)
 {
 	ListNode *cur = head;
+	struct timeval now;
+	gettimeofday(&now, NULL);
+
 	while (cur)
 	{
-		if (strcmp(cur->key, key) == 0)
+		if (strcmp(cur->key, key) != 0)
+		{
+			cur = cur->next;
+			continue;
+		}
+
+		printf("now:%ld:%ld\n", now.tv_sec, now.tv_usec);
+		printf("exp:%ld:%ld\n", cur->expire.tv_sec, cur->expire.tv_usec);
+
+		if (now.tv_sec < cur->expire.tv_sec ||
+			(now.tv_sec == cur->expire.tv_sec &&
+			 now.tv_usec < cur->expire.tv_usec))
+		{
 			return cur->value;
-		cur = cur->next;
+		}
+		else
+		{
+			cur = cur->next;
+		}
 	}
 	return NULL;
 }
 
-void set(char *key, char *value)
+void set(char *key, char *value, struct timeval exp)
 {
 	printf("SET[%s]", value);
 	ListNode *cur = head;
@@ -138,12 +161,13 @@ void set(char *key, char *value)
 		if (strcmp(cur->key, key) == 0)
 		{
 			cur->value = value;
+			cur->expire = exp;
 			return;
 		}
 		cur = cur->next;
 	}
 
-	head = new_listNode(head, key, value);
+	head = new_listNode(head, key, value, exp);
 	return;
 }
 
@@ -266,21 +290,44 @@ int main()
 				else if (memcmp(node->array[0]->bulk, "set", 3) == 0)
 				{
 					printf("COM:SET\n");
+					struct timeval exp;
+					gettimeofday(&exp, NULL);
+					if (node->size > 3 && memcmp(node->array[3]->bulk, "px", 2) == 0)
+					{
+						int msec = strtol(node->array[4]->bulk, NULL, 10);
+						/*exp.tv_usec += msec * 1000;
+						exp.tv_sec += exp.tv_usec / 1000000;
+						exp.tv_usec %= 1000000;*/
+						exp.tv_sec += msec / 1000;
+						exp.tv_usec += (msec % 1000) * 1000;
+						if (exp.tv_usec >= 1000000)
+						{
+							exp.tv_usec -= 1000000;
+							exp.tv_sec++;
+						}
+					}
+					else
+					{
+						exp.tv_sec = __LONG_MAX__;
+					}
 					set(str(node->array[1]->bulk, node->array[1]->size),
-						str(node->array[2]->bulk, node->array[2]->size));
+						str(node->array[2]->bulk, node->array[2]->size),
+						exp);
 					strncpy(buf, "+OK\r\n", 1024);
 				}
 				else if (memcmp(node->array[0]->bulk, "get", 3) == 0)
 				{
-					printf("COM:GET\n");
-					char *resp = get(str(node->array[1]->bulk, node->array[1]->size));
+					// printf("COM:GET\n");
+					char *key = str(node->array[1]->bulk, node->array[1]->size);
+					char *resp = get(key);
 					if (resp == NULL)
 					{
+						printf("GET[%s]:NULL\n", key);
 						strncpy(buf, "$-1\r\n", 1024);
 					}
 					else
 					{
-						printf("GET[%s]", resp);
+						printf("GET[%s]:[%s]\n", key, resp);
 						bulk(buf, resp, strlen(resp));
 						// strncpy(buf, "$-1\r\n", 1024);
 					}
